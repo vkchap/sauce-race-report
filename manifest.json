@@ -1,0 +1,23 @@
+{
+    "manifest_version": 1,
+    "id": "race-report",
+    "name": "Race Report",
+    "description": "Records one Zwift event from the gun to the finish line and writes a report about how it was raced: the start, the splits, the group you were in, draft against wind, the efforts, and the finish. Everything is kept on your own computer. The window makes no network requests of its own and no AI is involved unless you press one of the two copy buttons and paste the facts into an AI yourself. It records other riders to the same extent Sauce already does, and a rider Sauce cannot name appears only as \"Rider A\", \"Rider B\" and so on, with no rider id saved.",
+    "version": "1.0.6",
+    "website_url": "https://github.com/vkchap/sauce-race-report",
+    "author": "Van Chappell",
+    "windows": [
+        {
+            "file": "race-report.html",
+            "id": "report",
+            "name": "Race Report",
+            "description": "Records an event as you ride it, then reports how it was raced.",
+            "frame": true,
+            "overlay": false,
+            "default_bounds": {
+                "width": 1040,
+                "height": 800
+            }
+        }
+    ]
+}

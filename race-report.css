@@ -1,0 +1,357 @@
+/*
+ * Race Report - styling
+ *
+ * Self contained on purpose. It does not link Sauce's own stylesheet, so it cannot be broken by
+ * a Sauce theme change, and it follows the window's light or dark setting. Sauce puts its theme
+ * on <html data-theme="..."> (pages/src/common.mjs:1402-1422), so both that and the operating
+ * system preference are honoured.
+ */
+
+:root {
+    --bg: #17181c;
+    --bg-2: #1e2027;
+    --bg-3: #262932;
+    --fg: #e7e9ee;
+    --fg-dim: #a3a8b5;
+    --line: #333744;
+    --accent: #ff7a1a;
+    --warn: #ffc53d;
+    --bad: #ff6b6b;
+    --good: #57c785;
+    --radius: 6px;
+}
+
+html[data-theme="light"] {
+    --bg: #f6f7f9;
+    --bg-2: #ffffff;
+    --bg-3: #eceef2;
+    --fg: #1b1d22;
+    --fg-dim: #5a6070;
+    --line: #d8dbe2;
+}
+
+@media (prefers-color-scheme: light) {
+    html:not([data-theme="dark"]) {
+        --bg: #f6f7f9;
+        --bg-2: #ffffff;
+        --bg-3: #eceef2;
+        --fg: #1b1d22;
+        --fg-dim: #5a6070;
+        --line: #d8dbe2;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+/*
+ * The browser hides [hidden] with a plain display: none, which any class that sets display
+ * (.banner, .actions) overrides. Without this every banner showed at once, empty, on opening.
+ */
+[hidden] {
+    display: none !important;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+}
+
+body {
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+}
+
+header#top {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 16px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--line);
+    flex: 0 0 auto;
+}
+
+header#top h1 {
+    margin: 0;
+    font-size: 17px;
+    letter-spacing: 0.2px;
+}
+
+header#top .sub {
+    font-size: 11px;
+    color: var(--fg-dim);
+}
+
+header#top .controls {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+}
+
+.status {
+    flex: 1 1 auto;
+    font-size: 13px;
+    color: var(--fg-dim);
+    padding: 6px 10px;
+    border-radius: var(--radius);
+    background: var(--bg-3);
+}
+
+.status.recording {
+    color: var(--bg);
+    background: var(--good);
+    font-weight: 600;
+}
+
+button {
+    font: inherit;
+    color: var(--fg);
+    background: var(--bg-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 6px 12px;
+    cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+    border-color: var(--accent);
+}
+
+button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+#btn-copy-commentary,
+#btn-copy-debrief {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+    font-weight: 600;
+}
+
+.banner {
+    margin: 10px 16px 0;
+    padding: 10px 12px;
+    border-radius: var(--radius);
+    background: var(--bg-3);
+    border: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.banner.warn {
+    border-color: var(--warn);
+}
+
+.banner.ask {
+    border-color: var(--bad);
+}
+
+.banner-text {
+    flex: 1 1 auto;
+}
+
+.banner-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+    flex: 0 0 auto;
+}
+
+/* The "why is this incomplete" line under a row in the saved races list. */
+.rec-why {
+    color: var(--warn);
+    font-size: 12px;
+    margin-top: 2px;
+}
+
+/* The names checkbox, which sits on the same line as the copy button. */
+label.inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--fg-dim);
+    font-size: 13px;
+}
+
+nav.tabs {
+    display: flex;
+    gap: 4px;
+    padding: 10px 16px 0;
+    flex: 0 0 auto;
+}
+
+.tab {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: var(--fg-dim);
+    padding: 6px 10px;
+}
+
+.tab.active {
+    color: var(--fg);
+    border-bottom-color: var(--accent);
+}
+
+main {
+    flex: 1 1 auto;
+    overflow: auto;
+    padding: 12px 16px 32px;
+}
+
+.pane h2 {
+    font-size: 15px;
+    margin: 22px 0 6px;
+    color: var(--accent);
+}
+
+.actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+}
+
+.muted, .empty {
+    color: var(--fg-dim);
+}
+
+.error {
+    color: var(--bad);
+}
+
+#report section {
+    margin-bottom: 20px;
+}
+
+#report .report-head h1 {
+    font-size: 19px;
+    margin: 0 0 2px;
+}
+
+#report .report-head .sub {
+    color: var(--fg-dim);
+    font-size: 12px;
+    margin-bottom: 14px;
+}
+
+#report ul.lines {
+    margin: 0;
+    padding-left: 18px;
+}
+
+#report ul.lines li {
+    margin-bottom: 5px;
+}
+
+#report .notes {
+    background: var(--bg-3);
+    border-left: 3px solid var(--warn);
+    padding: 8px 12px;
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+}
+
+#report .disclaimer {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+}
+
+table {
+    border-collapse: collapse;
+    margin-top: 10px;
+    width: 100%;
+    font-size: 13px;
+}
+
+th, td {
+    text-align: left;
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+}
+
+th {
+    color: var(--fg-dim);
+    font-weight: 600;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.rec-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    margin-bottom: 6px;
+    background: var(--bg-2);
+}
+
+.rec-row.selected {
+    border-color: var(--accent);
+}
+
+.rec-main {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.rec-name {
+    font-weight: 600;
+}
+
+.rec-meta {
+    font-size: 12px;
+    color: var(--fg-dim);
+}
+
+.rec-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.tag {
+    font-size: 11px;
+    background: var(--bg-3);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 0 5px;
+    color: var(--fg-dim);
+}
+
+.tag.warn {
+    border-color: var(--warn);
+    color: var(--warn);
+}
+
+label {
+    display: block;
+    margin: 6px 0;
+}
+
+textarea {
+    width: 100%;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    background: var(--bg-2);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 8px;
+}

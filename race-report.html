@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<!--
+    Race Report - the window itself.
+
+    WHAT THIS FILE DOES: lays out the one window this mod declares. Three tabs, a status line, the
+    record controls, the report, the saved races and the explanation. All the behaviour is in
+    src/ui.mjs; all the wording that matters to the rider is here or in src/report.mjs.
+
+    The Content-Security-Policy is deliberately the same one Sauce's own pages declare
+    (pages/logs.html:7, pages/analysis-settings.html:7). Sauce imposes no policy of its own on a
+    mod page, so a page has to set its own, and matching Sauce exactly is the only version that is
+    known to work on the file:// origin these pages are served from. A stricter policy invented
+    here could block the module import of Sauce's page library and stop the mod dead.
+-->
+<html data-settings-key="race-report-settings-v1">
+    <head>
+        <meta charset="utf-8"/>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+        <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline';"/>
+
+        <title>Race Report</title>
+        <link rel="stylesheet" href="race-report.css"/>
+    </head>
+    <body>
+        <header id="top">
+            <div class="title">
+                <h1>Race Report</h1>
+                <div class="sub">
+                    Mod <span id="mod-version">-</span> &middot; Sauce <span id="sauce-version">-</span>
+                </div>
+            </div>
+            <div id="status" class="status idle">Starting...</div>
+            <div class="controls">
+                <button id="btn-start" title="Start recording now, without waiting for an event">Start now</button>
+                <button id="btn-stop" disabled title="Stop recording and write the report">Stop</button>
+            </div>
+        </header>
+
+        <div id="resume" class="banner" hidden>
+            <div class="banner-text"></div>
+            <div class="banner-actions">
+                <button id="resume-save">Keep it</button>
+                <button id="resume-discard">Throw it away</button>
+            </div>
+        </div>
+
+        <div id="save-problem" class="banner warn" hidden>
+            <div class="banner-text"></div>
+            <div class="banner-actions">
+                <button id="save-problem-download">Save it to a file instead</button>
+                <button class="dismiss">Dismiss</button>
+            </div>
+        </div>
+
+        <div id="not-a-race" class="banner" hidden>
+            <div class="banner-text"></div>
+            <div class="banner-actions"><button class="dismiss">Dismiss</button></div>
+        </div>
+
+        <div id="feed-problem" class="banner warn" hidden>
+            <div class="banner-text"></div>
+            <div class="banner-actions"><button class="dismiss">Dismiss</button></div>
+        </div>
+
+        <div id="store-problem" class="banner warn" hidden>
+            <div class="banner-text">This window could not open the place it keeps your races this
+                time, so races saved before may be missing from the list. They have not been
+                deleted, and they are listed again the next time it opens. Races recorded now are
+                saved as usual.</div>
+            <div class="banner-actions"><button class="dismiss">Dismiss</button></div>
+        </div>
+
+        <div id="budget-warning" class="banner warn" hidden>
+            <div class="banner-text">This mod is holding a lot of saved races. Save the ones you
+                want to a file and delete them here.</div>
+            <div class="banner-actions"><button class="dismiss">Dismiss</button></div>
+        </div>
+
+        <div id="confirm" class="banner ask" hidden>
+            <div id="confirm-text"></div>
+            <div class="banner-actions">
+                <button id="confirm-yes">Yes, delete</button>
+                <button id="confirm-no">Cancel</button>
+            </div>
+        </div>
+
+        <nav class="tabs">
+            <button class="tab active" data-pane="report">Report</button>
+            <button class="tab" data-pane="recordings">Recorded races</button>
+            <button class="tab" data-pane="about">How this works</button>
+        </nav>
+
+        <main>
+            <section class="pane" data-pane="report">
+                <div id="report-actions" class="actions" hidden>
+                    <button id="btn-copy-commentary" data-style="commentary" title="Copy a prompt plus the facts of this race for a race commentary: the race told as a story, to share with team mates. Paste it into whatever AI you use">Copy race commentary for AI (to share)</button>
+                    <button id="btn-copy-debrief" data-style="debrief" title="Copy a prompt plus the facts of this race for a coach's debrief: what your efforts cost and racing choices to try, with your earlier races, to review with your coach. Paste it into whatever AI you use">Copy coach's debrief for AI</button>
+                    <label class="inline" title="On by default, for both buttons. The window always shows the names Sauce shows; this only controls the text you copy, which leaves this computer as soon as you paste it. Untick it to replace every name with a label good for this race only, and leave out team tags.">
+                        <input type="checkbox" data-setting="namesInCopy"/> Include rider names in the copied text
+                    </label>
+                    <button id="btn-download-current">Save this race to a file</button>
+                    <button id="btn-results" hidden title="Asks Zwift for the official results using your own Zwift login">Get official results</button>
+                    <span id="results-hint" class="muted" hidden>Press Get official results before copying, for the winner and your team's places.</span>
+                    <span id="results-error" class="error" hidden></span>
+                </div>
+                <div id="copy-fallback" hidden>
+                    <p>Your computer would not let the window put this on the clipboard. It is
+                       selected below: press Ctrl+C, or Command+C on a Mac.</p>
+                    <textarea id="copy-fallback-text" rows="8" readonly></textarea>
+                </div>
+                <div id="report">
+                    <p class="empty">No race open yet. Leave this window open and ride a race, or
+                       press "Start now" to record whatever you are doing.</p>
+                </div>
+            </section>
+
+            <section class="pane" data-pane="recordings" hidden>
+                <div class="actions">
+                    <span id="total-size" class="muted"></span>
+                    <button id="btn-download-all">Save every race to one file</button>
+                    <button id="btn-delete-all">Delete every recording</button>
+                </div>
+                <p class="muted">
+                    Races are kept inside Sauce, not as files on your computer, because a mod
+                    cannot write files. This list is where you find them. Use "Save this race to
+                    a file" or the button above for anything you want to keep, back up or send
+                    somewhere.
+                </p>
+                <div id="recordings"></div>
+            </section>
+
+            <section class="pane" data-pane="about" hidden>
+                <h2>What this mod does</h2>
+                <ul>
+                    <li>It watches for the start of an event you are riding and records it by
+                        itself, from the gun to the finish line. By default it then keeps watching
+                        for two minutes to see the riders behind you come in, and describes that
+                        separately under "After the line": every number about your own race still
+                        stops at the line. "Start now" and "Stop" are there
+                        for when you want to record something else, or when an event starts in a
+                        way Sauce did not see. A recording you start by hand keeps running until
+                        you press Stop: it is not stopped by an event finishing.</li>
+                    <li>It keeps your own numbers second by second, and the shape of the race
+                        around you: the size of your group, who was in it, who was in the groups
+                        ahead of and behind it, and the gaps. A rider only counts as having changed
+                        group once the change has held for a few seconds, because Sauce's groups can
+                        flicker in a big field.</li>
+                    <li>It counts the seconds it actually captured against the seconds the race
+                        ran, and says so in the report. A recording with holes in it, or one that
+                        started after the gun, is marked incomplete rather than presented as a
+                        whole race.</li>
+                    <li>It writes the report itself. No AI is involved unless you press one of
+                        the two copy buttons and paste the result somewhere yourself. "Copy race
+                        commentary for AI (to share)" asks for the race told as a story, for team
+                        mates. "Copy coach's debrief for AI" asks for a coach talking you through
+                        what your efforts cost and which racing choices to try, and adds a summary
+                        of up to three of your earlier races.</li>
+                </ul>
+
+                <h2>Settings</h2>
+                <label><input type="checkbox" data-setting="autoRecord"/> Start recording by itself
+                    when an event starts</label>
+                <label>Keep recording for
+                    <select data-setting="afterLineSeconds">
+                        <option value="0">no extra time</option>
+                        <option value="60">1 minute</option>
+                        <option value="120">2 minutes</option>
+                        <option value="300">5 minutes</option>
+                    </select>
+                    after you finish, to see the riders behind you come in. Your own race is still
+                    measured only up to the line, and pressing Stop ends the extra time at once. A
+                    recording you start by hand is not affected: it runs until you press
+                    Stop.</label>
+                <label><input type="checkbox" data-setting="racesOnly"/> Only keep events Zwift
+                    lists as races. Many community races are listed as group rides, so this is off
+                    by default; when it is on and an event is dropped, the window says so.</label>
+                <label>Your team tag:
+                    <input type="text" data-setting="teamTag" size="12" maxlength="16"
+                           placeholder="from your name"/>
+                    The race commentary is written about your team, and finds your team mates by this
+                    tag, for example MNSTRS. Leave it empty to use the tag in your Zwift name.</label>
+                <label><input type="checkbox" data-setting="namesInCopy"/> Include rider names in
+                    the text either copy button puts on your clipboard. On by default; untick it to
+                    replace every name, including yours, with a label good for this race only, and
+                    to leave out team tags.</label>
+
+                <h2>About the data in this report</h2>
+                <ul>
+                    <li>This mod runs inside Sauce for Zwift and reads only what Sauce already has.
+                        It keeps everything on this computer. The report window makes no network
+                        requests of its own.</li>
+                    <li>A race report does not work without knowing who raced, so this mod holds
+                        and shows other riders the way Sauce itself does: the rider id and the name
+                        Sauce already shows in its own Nearby and Events windows, and the team tag
+                        Sauce reads out of that name and shows in its Groups window. It stores no
+                        avatar, no country, no weight and no FTP for anyone but you. It never asks
+                        Zwift for another rider's profile.</li>
+                    <li>Sauce keeps an opt-out list of riders and drops them from the data before a
+                        mod sees them. On some Sauce versions that drop is known to remove the
+                        wrong riders from a packet, so an opted-out rider can still reach a mod,
+                        always without a name. This mod never shows a rider id on screen and never
+                        saves one for anyone Sauce could not name: they appear as "Rider A",
+                        "Rider B" and so on. Those labels are good for one race only and mean
+                        nothing in any other report.</li>
+                    <li>"Get official results" is the one button that reaches Zwift. It makes the
+                        same call Sauce's own Events window makes when you open a finished event,
+                        on your own Zwift login, and Sauce saves every entrant's profile to its own
+                        athlete database as a result. Nothing calls it unless you press it.</li>
+                    <li>Recordings are kept on this computer, in the storage Sauce gives its
+                        windows for this Sauce profile, which every other enabled mod can read. They
+                        stay with that profile: cloning or exporting a Sauce profile does not copy
+                        them. Use "Save this race to a file" for anything you want to keep, and
+                        "Delete" for anything you do not.</li>
+                    <li>Nothing here is uploaded anywhere. If you press either copy button, the
+                        facts go to your clipboard and it is your choice where you paste them.
+                        Anything you paste into an AI service goes to that service under their
+                        terms. Rider names are in that text unless you untick the box next to the
+                        buttons.</li>
+                    <li>Mods are written by third parties. Use at your own risk.</li>
+                </ul>
+
+                <h2>What it cannot tell you</h2>
+                <ul>
+                    <li>Why anyone did anything. Nothing in the data marks intent.</li>
+                    <li>Your time gap to the race leader. Zwift sends it and Sauce does not keep
+                        it.</li>
+                    <li>Riders more than about fifteen minutes ahead of or behind you.</li>
+                    <li>Which powerup another rider was holding, or which frame or wheels anyone
+                        was on.</li>
+                    <li>Anything at all about an event tagged hidethehud or nooverlays. Sauce
+                        records nothing for you in those, so no mod can report on them.</li>
+                </ul>
+
+                <h2>Which Sauce this needs</h2>
+                <p class="muted">Sauce <span id="min-sauce-version">-</span> or newer. On an older
+                   build the data feed this mod uses may not exist, and the window will say so
+                   rather than waiting for ever.</p>
+            </section>
+        </main>
+
+        <script type="module" src="src/ui.mjs"></script>
+    </body>
+</html>

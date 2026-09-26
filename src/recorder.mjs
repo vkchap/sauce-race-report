@@ -186,7 +186,7 @@
 // 3: the gun clock fields (scheduledStartISO, gunSource, timeSource, zwiftClockStartedAtRaceSecond
 // and friends) and timeline.stateTime. A version 2 recording counts from state.time.
 export const SCHEMA_VERSION = 5;
-export const MOD_VERSION = '1.0.6';
+export const MOD_VERSION = '1.0.7';
 
 /*
  * The oldest Sauce this mod is known to work on. 2.3.0 is the oldest release whose source was
@@ -206,7 +206,7 @@ const BYTES_PER_SPAN = 12;
 /*
  * The longest "keep recording after you finish" the mod accepts. The size guard is not run after
  * the line (it would change the race's own row intervals), so this is what keeps a race that
- * already sits at the size ladder's top step under the 400 kB cap of the localStorage fallback:
+ * already sits at the size ladder's top step under the 400 kB cap used with no database:
  * five minutes of rows is about 30 kB. See THE SIZE RULE in store.mjs.
  */
 export const MAX_AFTER_LINE_SECONDS = 300;
@@ -689,7 +689,7 @@ export class Recorder {
         this.sizeBudgetBytes = options.sizeBudgetBytes ?? 400_000;
         this.sizeGuard = options.sizeGuard !== false;
         // WHO DID WHAT IN YOUR GROUP only where there is room for it: IndexedDB, where ui.mjs turns
-        // the size guard off. The localStorage fallback's 400 kB a race keeps the race itself first.
+        // the size guard off. With no database the 400 kB a race keeps the race itself first.
         this.keepInGroup = options.keepInGroup ?? !this.sizeGuard;
         this.lostFeedSeconds = options.lostFeedSeconds ?? 120;
         this.autoRecord = options.autoRecord !== false;

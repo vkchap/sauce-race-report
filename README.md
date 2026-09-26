@@ -117,14 +117,12 @@ The folder name you use becomes the mod's id, so keep it simple: `race-report`.
   Zwift for the segment times on the sprints and KOMs you rode, as Sauce's own Analysis window
   does, and keeps only the order of the riders in the race. Nothing calls either unless you press it.
 
-Recordings are kept on your computer in an IndexedDB database that belongs to this mod's window,
-in your Sauce profile, which other enabled mods can read. They are deliberately not kept in the
-local storage Sauce's own windows share. Every write there reaches every other Sauce window, and
-for a name starting with "/" Sauce's Watching window reloads itself and the Overview bar rebuilds.
-This mod used to write the whole race in progress there every 20 seconds, so those overlays
-reloaded three times a minute through every race. Nothing the mod writes now has a name starting
-with "/", its settings included. The first time the window opens outside an event after the
-upgrade has been confirmed, the old copies are removed in one go and the overlays reload once.
+Recordings, the crash snapshot and the settings are kept on your computer in an IndexedDB database
+that belongs to this mod's window, in your Sauce profile, which other enabled mods can read. The mod
+writes nothing at all to the local storage Sauce's own windows share. That pool is small, commonly
+about 5 MB, and it holds Sauce's own settings, so a mod that filled it would stop Sauce saving them;
+and every write there reaches every other Sauce window, which used to make the Watching window
+reload itself several times a minute while a race recorded.
 
 Saving a long race does not thin it out: a three hour race keeps your own numbers every second and
 the group around you every two seconds. How much the mod lets itself keep follows what your
@@ -134,18 +132,12 @@ only the seconds and riders that changed since the last save are written, every 
 restart of Sauce loses at most that much. If a finished race cannot be saved, it is offered as a
 file and its last snapshot is kept, to be offered again the next time the window opens.
 
-If IndexedDB will not open in Sauce's window (it is tried twice), the mod falls back to Sauce's
-shared local storage, under names Sauce's own windows ignore, in small pieces and once a minute,
-and says on screen that races saved before may be missing from the list that time. There one race
-is capped at about 400 kB and the total at about 1 MB, because that pool is shared with Sauce's own
-settings, so a long race thins out as before. The next time IndexedDB opens, those races are moved
-into it. Each saved race says which of the two kept it, in its `storedIn` field, and the window's
-console says so once when it opens.
+If IndexedDB will not open in Sauce's window (it is tried twice), nothing is written anywhere. The
+window says so, the race you ride is kept only while the window is open, and you can still save it
+to a file. Races saved before are not lost: they are listed again the next time it opens.
 
-Races saved by an earlier version are copied over the first time the window opens. The old copies
-are only removed on a later start that finds the new ones still there, so a store that did not
-survive Sauce closing never costs a race. Races stay with the Sauce profile they were recorded in:
-Sauce's Clone and Export profile do not copy them. Save anything you want to keep to a file.
+Races stay with the Sauce profile they were recorded in: Sauce's Clone and Export profile do not
+copy them. Save anything you want to keep to a file.
 
 Mods are written by third parties. Use at your own risk.
 

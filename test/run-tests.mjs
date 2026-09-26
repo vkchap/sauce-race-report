@@ -53,10 +53,9 @@ import {Recorder, Roster, activeEventSlice, isSelfPayload, isPastEventEnd, hasUn
         isRaceLike, eventBlocksRecording, computeCoverage, applyIncompleteness, withAfterLine,
         serverClockOffset, MOD_VERSION, MIN_SAUCE_VERSION, MAX_AFTER_LINE_SECONDS,
         ZWIFT_EPOCH_MS} from '../src/recorder.mjs';
-import {Store, MemoryAdapter, MemoryStorage, LocalStorageKV, LegacyStorage, LegacySource, LocalSettings,
+import {Store, MemoryAdapter, MemoryStorage, ChunkedKV,
         openStore, summarize, splitSnapshot, joinSnapshot, indexedDBBudgets, DEFAULT_SETTINGS,
-        LOCAL_BUDGETS, LOCAL_PREFIX, LOCAL_PIECE_CHARS, IDB_FIXED_BUDGETS, DB_NAME, KEY_INDEX,
-        KEY_LIVE, KEY_PENDING, KEY_SETTINGS, LEGACY_KEY_SETTINGS, keyForRecording} from '../src/store.mjs';
+        LOCAL_BUDGETS, LOCAL_PREFIX, LOCAL_PIECE_CHARS, IDB_FIXED_BUDGETS, DB_NAME} from '../src/store.mjs';
 import {buildReport, renderReportHTML, findSplits, companions, ridersWhoLeft,
         bestWindow, ownSeries, fmtClock, prettyPowerUp, SPLIT_HOLD_SECONDS, splitSizes, resultsErrorText} from '../src/report.mjs';
 import {buildFactPack, PROMPTS, MAX_EARLIER_RACES, HARD_CAP_CHARACTERS, isEarlierRace, shortTag, tagOnce} from '../src/factpack.mjs';
@@ -886,8 +885,9 @@ check('weight and FTP are stored for the rider alone, never for anybody else', (
 });
 
 // A store over the localStorage fallback, on a Storage in memory.
-function localStore(storage = new MemoryStorage(), settings = new MemoryAdapter()) {
-    return new Store(new LocalStorageKV(storage), settings, LOCAL_BUDGETS);
+/* A store over the in-memory key-value store used when IndexedDB will not open. */
+function localStore(storage = new MemoryStorage()) {
+    return new Store(new ChunkedKV(storage), LOCAL_BUDGETS);
 }
 
 await checkAsync('recordings are saved, listed, opened and deleted', async () => {
@@ -936,63 +936,35 @@ await checkAsync('a full storage pool is reported to the rider, with the recordi
     assertEq(storage.map.size, 0, 'a failed save left pieces of the race in localStorage');
 });
 
-await checkAsync('the storage budget is small enough not to threaten Sauce\'s own settings', async () => {
-    // Every Sauce window and every mod share one localStorage origin, commonly capped around
-    // 5 MB, and Sauce handles QuotaExceededError nowhere. That rule is for the fallback only.
-    const store = await openStore({indexedDB: null, localStorage: new MemoryStorage()});
-    assertEq(store.kind, 'localstorage');
+await checkAsync('with no IndexedDB the races are kept in memory, never in localStorage', async () => {
+    // Sauce's mod store review, 25 Sep 2026: "LocalStorage quota is typically ~5MB... Once
+    // LocalStorage is filled up it's going to brick any config updates for normal Sauce windows".
+    // So there is no localStorage fallback at all: with no IndexedDB the races live in this
+    // window's memory and are offered as a file.
+    const store = await openStore({indexedDB: null});
+    assertEq(store.kind, 'memory');
     assert(store.totalBudget <= 1_000_000, `total budget is ${store.totalBudget}`);
     assert(store.perRaceBudget <= 400_000, `per race budget is ${store.perRaceBudget}`);
     assert(store.warnAt < store.totalBudget, 'the warning comes after the cap');
 });
 
-await checkAsync('nothing is written under a "/" key, the settings included, and nothing carries a window id', async () => {
-    // Sauce's windows JSON.parse the whole new value of any key starting with "/", and the
-    // Watching window reloads for it (pages/src/common.mjs:66-84, pages/src/watching.mjs:1473-1486),
-    // so nothing is kept under keys that do. Everything is written to localStorage directly,
-    // because Common.storage would prefix it with the window id (pages/src/common.mjs:90, :103,
-    // :122), which is minted fresh each time the window is added.
-    const storage = spyStorage();
-    const store = new Store(new LocalStorageKV(storage), new LocalSettings(storage), LOCAL_BUDGETS);
-    await store.save(RACE);
-    store.setSetting('racesOnly', false);
-    await store.saveLive({...RACE, inProgress: true});
-    for (const k of storage.map.keys()) {
-        assert(k.startsWith(LOCAL_PREFIX), `key is not namespaced: ${k}`);
-        assert(!k.startsWith('/'), `something is under a key Sauce parses: ${k}`);
+await checkAsync('the mod writes nothing at all to localStorage, the settings included', async () => {
+    // The pool is shared with Sauce's own settings and Sauce handles a full pool nowhere, so the
+    // mod stays out of it: races, the crash snapshot and the settings are all in IndexedDB, and
+    // nothing at all is kept when it will not open (Sauce's mod store review, 25 Sep 2026).
+    for (const f of ['src/store.mjs', 'src/ui.mjs']) {
+        const code = FS.readFileSync(Path.join(MOD_DIR, f), 'utf8')
+            .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+        assert(!/\blocalStorage\b/.test(code), `${f} still touches localStorage`);
     }
-    assert(storage.map.has(KEY_SETTINGS), 'the settings were not written');
-    assert(!KEY_SETTINGS.startsWith('/'), 'the settings key is one Sauce parses');
-});
-
-await checkAsync('the settings an earlier version kept under "/" are read, and that key is never written or removed', async () => {
-    const storage = spyStorage();
-    storage.setItem(LEGACY_KEY_SETTINGS, JSON.stringify({racesOnly: true, afterLineSeconds: 60}));
-    storage.writes = [];
-    let removed = 0;
-    storage.removeItem = k => {
-        removed++;
-        MemoryStorage.prototype.removeItem.call(storage, k);
-    };
-    const store = await openStore({indexedDB: new FakeIndexedDB(), localStorage: storage,
-                                   settings: new LocalSettings(storage),
-                                   legacy: new LegacyStorage(storage)});
-    assertEq(store.settings().racesOnly, true);
-    assertEq(store.settings().afterLineSeconds, 60);
-    assertEq(store.settings().autoRecord, DEFAULT_SETTINGS.autoRecord);
-    assertEq(storage.writes.length, 0, 'reading the settings wrote them');
-    store.setSetting('afterLineSeconds', 30);
-    assertEq(storage.writes.map(x => x[0]).join(), KEY_SETTINGS);
-    assertEq(store.settings().afterLineSeconds, 30);
-    assertEq(store.settings().racesOnly, true, 'the old settings were not carried over');
-    await store.dropMovedCopies();
-    assertEq(JSON.parse(storage.getItem(LEGACY_KEY_SETTINGS)).afterLineSeconds, 60, 'the old key was written');
-    assertEq(removed, 0, 'a key was removed');
-    // ui.mjs hands the store these settings, not Common.storage.
-    const ui = FS.readFileSync(Path.join(MOD_DIR, 'src/ui.mjs'), 'utf8')
-        .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    assert(ui.includes('new LocalSettings(ls') && !ui.includes('Common.storage'),
-           'ui.mjs still keeps the settings in Common.storage');
+    const idb = new FakeIndexedDB();
+    const store = await openStore({indexedDB: idb});
+    store.setSetting('racesOnly', true);
+    await store.save(RACE);
+    // The settings come back from the store itself on the next start.
+    const again = await openStore({indexedDB: idb});
+    assertEq(again.settings().racesOnly, true, 'the settings did not survive');
+    assertEq(again.settings().afterLineSeconds, DEFAULT_SETTINGS.afterLineSeconds, 'a default was lost');
 });
 
 await checkAsync('an interrupted recording can be picked up after Sauce restarts', async () => {
@@ -2634,17 +2606,6 @@ function spyStorage() {
     return storage;
 }
 
-function spySettings() {
-    const settings = new MemoryAdapter();
-    settings.writes = [];
-    const set = settings.set.bind(settings);
-    settings.set = (k, v) => {
-        settings.writes.push(k);
-        set(k, v);
-    };
-    return settings;
-}
-
 /*
  * A whole synthetic race, with the crash snapshot saved the way ui.mjs saves it: every
  * `every` seconds, from the data callback, without waiting for the write. Returns the finished
@@ -2675,7 +2636,7 @@ const LONG_FEED = {seconds: THREE_HOURS, endDistance: 200000};
 
 await checkAsync('IndexedDB is used when it works, and each saved race says which store kept it', async () => {
     const idb = new FakeIndexedDB();
-    const store = await openStore({indexedDB: idb, localStorage: spyStorage()});
+    const store = await openStore({indexedDB: idb});
     assertEq(store.kind, 'indexeddb');
     assertEq(store.fallbackReason, null);
     const res = await store.save(RACE);
@@ -2688,7 +2649,7 @@ await checkAsync('IndexedDB is used when it works, and each saved race says whic
     assertEq((await again.load(RACE.id)).id, RACE.id);
     const local = localStore();
     await local.save(RACE);
-    assertEq((await local.load(RACE.id)).storedIn, 'localstorage');
+    assertEq((await local.load(RACE.id)).storedIn, 'memory');
 });
 
 check('the IndexedDB budgets come from the storage estimate, with a fixed fallback', () => {
@@ -2710,7 +2671,7 @@ check('the IndexedDB budgets come from the storage estimate, with a fixed fallba
     }
 });
 
-await checkAsync('with IndexedDB missing, throwing or failing, the store falls back to localStorage under keys Sauce ignores', async () => {
+await checkAsync('with IndexedDB missing, throwing or failing, the races are kept in memory and the window says so', async () => {
     const cases = [
         ['missing', null],
         ['open throws', new FakeIndexedDB({throwOnOpen: true})],
@@ -2718,43 +2679,25 @@ await checkAsync('with IndexedDB missing, throwing or failing, the store falls b
         ['writes fail', new FakeIndexedDB({failWrites: true})],
     ];
     for (const [what, idb] of cases) {
-        const storage = spyStorage();
-        const store = await openStore({indexedDB: idb, localStorage: storage});
-        assertEq(store.kind, 'localstorage', what);
+        const store = await openStore({indexedDB: idb});
+        assertEq(store.kind, 'memory', what);
         assert(store.fallbackReason, `${what}: no reason given for the fallback`);
         assertEq(store.perRaceBudget, LOCAL_BUDGETS.perRace, what);
         const res = await store.save(RACE);
         assert(res.ok, `${what}: ${res.error}`);
-        assertEq((await store.load(RACE.id)).storedIn, 'localstorage', what);
-        const back = await localStore(storage).init();
-        assertEq(back.list().length, 1, `${what}: the list did not survive`);
-        for (const [k, n] of storage.writes) {
-            assert(!k.startsWith('/'), `${what}: wrote ${k}, which every Sauce window would parse`);
-            assert(n <= LOCAL_PIECE_CHARS, `${what}: one write was ${n} characters`);
-        }
+        assertEq((await store.load(RACE.id)).storedIn, 'memory', what);
+        assertEq(store.list().length, 1, `${what}: the race was not listed`);
+        // Nothing of it survives the window, which is what the banner says.
+        assertEq((await openStore({indexedDB: idb})).list().length, 0, `${what}: memory outlived the window`);
     }
-    // No localStorage at all: memory, so the window still works, and it says so.
-    const none = await openStore({indexedDB: null, localStorage: null});
-    assertEq(none.kind, 'memory');
-    assert((await none.save(RACE)).ok);
+    assert(indexedDBFailedBanner(), 'the window does not say the races cannot be kept');
 });
 
-// Races as an earlier version saved them: whole, under "/" keys, through Common.storage.
-function legacyStorageWith(races, {live = null, pending = null} = {}) {
-    const storage = spyStorage();
-    storage.setItem(KEY_INDEX, JSON.stringify(races.map(x => ({...summarize(x), bytes: JSON.stringify(x).length}))));
-    for (const r of races) {
-        storage.setItem(keyForRecording(r.id), JSON.stringify(r));
-    }
-    if (live) {
-        storage.setItem(KEY_LIVE, JSON.stringify(live));
-    }
-    if (pending) {
-        storage.setItem(KEY_PENDING, JSON.stringify(pending));
-    }
-    storage.setItem(LEGACY_KEY_SETTINGS, JSON.stringify({racesOnly: true}));
-    storage.writes = [];
-    return storage;
+function indexedDBFailedBanner() {
+    const html = FS.readFileSync(Path.join(MOD_DIR, 'race-report.html'), 'utf8');
+    const ui = FS.readFileSync(Path.join(MOD_DIR, 'src/ui.mjs'), 'utf8');
+    return /could not open the place it keeps your races[\s\S]*?Save any race you record now to a file/.test(html) &&
+        ui.includes("showBanner('#store-problem'");
 }
 
 // An in-progress snapshot of the synthetic race, cut off `seconds` in.
@@ -2777,151 +2720,13 @@ function snapshotAt(seconds, opts = {}) {
     return snap;
 }
 
-await checkAsync('races saved by an earlier version move into IndexedDB without losing any', async () => {
-    const races = [RACE, {...RACE_120, id: 'rec-after-line'}, {...FULL, id: 'rec-full'}];
-    const live = snapshotAt(400);
-    const pending = {...snapshotAt(200), id: 'rec-pending'};
-    const legacy = legacyStorageWith(races, {live, pending});
-    const idb = new FakeIndexedDB();
-    const store = await openStore({indexedDB: idb, legacy: new LegacyStorage(legacy)});
-    assertEq(JSON.stringify(store.migration), JSON.stringify({moved: 3, kept: 0, snapshots: 2, waiting: 0}));
-    assertEq(store.list().length, 3);
-    for (const old of races) {
-        const back = JSON.parse(await store.loadRaw(old.id));
-        assertEq(back.storedIn, 'indexeddb');
-        delete back.storedIn;
-        assertEq(JSON.stringify(back), JSON.stringify(old), `${old.id} changed on the way`);
-    }
-    assertEq(JSON.stringify(await store.loadPending()), JSON.stringify(pending));
-    assertEq(JSON.stringify(await store.loadLive()), JSON.stringify(live));
-    // Nothing old is removed in the start that copied it: that start cannot tell whether the copy
-    // survives Sauce closing.
-    assertEq(await store.dropMovedCopies(), 0);
-    assertEq(legacy.writes.length + legacy.removes.length, 0, 'the first start touched the old keys');
-    for (const old of races) {
-        assertEq(legacy.getItem(keyForRecording(old.id)), JSON.stringify(old), `${old.id} went too soon`);
-    }
-    // The next start finds its copies still there, copies nothing again, and removes the old
-    // keys, all at once and only when asked (ui.mjs asks when no race is recording).
-    const again = await openStore({indexedDB: idb, legacy: new LegacyStorage(legacy)});
-    assertEq(JSON.stringify(again.migration), JSON.stringify({moved: 0, kept: 0, snapshots: 0, waiting: 5}));
-    assertEq(again.list().length, 3);
-    assertEq(legacy.removes.length, 0, 'the old keys were removed before ui.mjs asked');
-    assertEq(await again.dropMovedCopies(), 5);
-    for (const old of races) {
-        assertEq(legacy.getItem(keyForRecording(old.id)), null, `${old.id} was left behind`);
-    }
-    for (const k of [KEY_INDEX, KEY_LIVE, KEY_PENDING]) {
-        assertEq(legacy.getItem(k), null, `${k} was left behind`);
-    }
-    assertEq(legacy.writes.length, 0, 'moving the races out wrote to a "/" key');
-    assertEq(legacy.removes.length, 6, 'removed more than the races, the snapshots and the index');
-    assertEq(legacy.getItem(LEGACY_KEY_SETTINGS), JSON.stringify({racesOnly: true}), 'the settings were touched');
-    // A third start has nothing to do, and the snapshot of the race that was running is offered.
-    const third = await openStore({indexedDB: idb, legacy: new LegacyStorage(legacy)});
-    assertEq(JSON.stringify(third.migration), JSON.stringify({moved: 0, kept: 0, snapshots: 0, waiting: 0}));
-    assertEq(third.list().length, 3);
-    assertEq((await third.takePending()).id, live.id);
-    // ui.mjs asks for the removal only when nothing is recording and the rider is not in an event.
-    const ui = FS.readFileSync(Path.join(MOD_DIR, 'src/ui.mjs'), 'utf8');
-    assert(/recorder\.state !== 'recording' &&\s*\(recorder\.lastSelfAt \? !lastSelfInEvent/.test(ui) &&
-           ui.includes('store.dropMovedCopies()'), 'ui.mjs removes the old keys while a race may be running');
-});
-
-await checkAsync('an old race is only removed once its new copy reads back identically, and on a later start', async () => {
-    const races = [RACE, {...RACE, id: 'rec-full-pool'}, {...RACE, id: 'rec-garbled'}];
-    const legacy = legacyStorageWith(races);
-    const kv = new LocalStorageKV(new MemoryStorage());
-    const write = kv.update.bind(kv);
-    kv.update = (key, fn) => write(key, raw => {
-        const r = fn(raw);
-        if ((r.puts || []).some(([k]) => k === 'race/rec-full-pool')) {
-            throw new Error('QuotaExceededError');
-        }
-        return r;
-    });
-    const get = kv.get.bind(kv);
-    kv.get = async k => {
-        const v = await get(k);
-        return k === 'race/rec-garbled' && v ? v.replace('"finish"', '"manual"') : v;
-    };
-    const store = await new Store(kv, new MemoryAdapter(), LOCAL_BUDGETS).init();
-    const report = await store.migrateFrom(new LegacySource(new LegacyStorage(legacy)));
-    assertEq(report.moved, 1);
-    assertEq(report.kept, 2);
-    assertEq(store.list().map(x => x.id).join(), RACE.id, 'a copy that did not read back was kept in the list');
-    // A later start removes only the one that moved.
-    const later = new Store(kv, new MemoryAdapter(), LOCAL_BUDGETS);
-    await later.init();
-    const again = await later.migrateFrom(new LegacySource(new LegacyStorage(legacy)));
-    assertEq(again.waiting, 1);
-    await later.dropMovedCopies();
-    assertEq(legacy.getItem(keyForRecording(RACE.id)), null);
-    assertEq(legacy.getItem(keyForRecording('rec-full-pool')), JSON.stringify(races[1]),
-             'a race that did not fit was removed');
-    assertEq(legacy.getItem(keyForRecording('rec-garbled')), JSON.stringify(races[2]),
-             'a race that did not read back identically was removed');
-    assertEq(JSON.parse(legacy.getItem(KEY_INDEX)).map(x => x.id).join(), `${RACE.id},rec-full-pool,rec-garbled`,
-             'the old list was rewritten, which reloads Sauce\'s overlays');
-});
-
-await checkAsync('a database that did not keep its copies gets them again, and a race deleted in between does not come back', async () => {
-    const races = [RACE, {...RACE, id: 'rec-2'}];
-    const legacy = legacyStorageWith(races);
-    // Start 1 copies both; start 2 is on a database that kept nothing (as if IndexedDB were not
-    // kept on disk), so it copies them again and removes nothing.
-    await openStore({indexedDB: new FakeIndexedDB(), legacy: new LegacyStorage(legacy)});
-    const idb = new FakeIndexedDB();
-    const second = await openStore({indexedDB: idb, legacy: new LegacyStorage(legacy)});
-    assertEq(second.migration.moved, 2);
-    assertEq(second.migration.waiting, 0);
-    await second.dropMovedCopies();
-    assertEq(legacy.removes.length, 0, 'old races were removed with no copy proven to survive');
-    // The rider deletes one of them in that session. Start 3 removes both old copies, and the
-    // deleted race stays deleted.
-    await second.remove('rec-2');
-    const third = await openStore({indexedDB: idb, legacy: new LegacyStorage(legacy)});
-    await third.dropMovedCopies();
-    assertEq(third.list().map(x => x.id).join(), RACE.id, 'a deleted race came back');
-    assertEq(legacy.getItem(keyForRecording('rec-2')), null);
-    assertEq(legacy.getItem(KEY_INDEX), null);
-});
-
-await checkAsync('races saved while IndexedDB would not open are listed again once it does', async () => {
-    // A start where IndexedDB fails (here: the first start after upgrading, with old races under
-    // "/" keys), then a start where it works.
-    const storage = legacyStorageWith([RACE]);
-    const idb = new FakeIndexedDB({failOpen: true});
-    const first = await openStore({indexedDB: idb, localStorage: storage, legacy: new LegacyStorage(storage)});
-    assertEq(first.kind, 'localstorage');
-    assert(first.indexedDBFailed, 'the window is not told races may be missing');
-    assertEq(first.list().map(x => x.id).join(), RACE.id, 'the old races are not listed in the fallback');
-    assert((await first.save({...RACE, id: 'rec-fallback'})).ok);
-    await first.saveLive({...RACE, id: 'rec-running', inProgress: true});
-    idb.failOpen = false;
-    const second = await openStore({indexedDB: idb, localStorage: storage, legacy: new LegacyStorage(storage)});
-    assertEq(second.kind, 'indexeddb');
-    assertEq(second.list().map(x => x.id).sort().join(), [RACE.id, 'rec-fallback'].sort().join(),
-             'a race kept in the fallback is not listed');
-    assertEq((await second.takePending()).id, 'rec-running', 'the snapshot kept in the fallback is not offered');
-    await second.dropMovedCopies();
-    // Start 3 finds the copies and clears the fallback and the old keys; a fourth lists the same.
-    const third = await openStore({indexedDB: idb, localStorage: storage, legacy: new LegacyStorage(storage)});
-    await third.dropMovedCopies();
-    const left = [...storage.map.keys()].filter(k => k !== KEY_SETTINGS && k !== LEGACY_KEY_SETTINGS);
-    assertEq(left.join(), '', 'the fallback or the old keys were left behind');
-    const fourth = await openStore({indexedDB: idb, localStorage: storage, legacy: new LegacyStorage(storage)});
-    assertEq(fourth.list().length, 2);
-    assertEq((await fourth.loadPending()).id, 'rec-running');
-});
-
-await checkAsync('IndexedDB that is slow to open the first time is tried again before the fallback', async () => {
+await checkAsync('IndexedDB that is slow to open the first time is tried again before giving up', async () => {
     const idb = new FakeIndexedDB({hangOpens: 1});
-    const store = await openStore({indexedDB: idb, localStorage: new MemoryStorage(), openTimeoutMs: 20});
+    const store = await openStore({indexedDB: idb, openTimeoutMs: 20});
     assertEq(store.kind, 'indexeddb');
-    const never = await openStore({indexedDB: new FakeIndexedDB({hangOpens: 2}), localStorage: new MemoryStorage(),
+    const never = await openStore({indexedDB: new FakeIndexedDB({hangOpens: 2}),
                                    openTimeoutMs: 20, retryTimeoutMs: 20});
-    assertEq(never.kind, 'localstorage');
+    assertEq(never.kind, 'memory');
     assert(never.indexedDBFailed);
     assert(/in time/.test(never.fallbackReason), never.fallbackReason);
 });
@@ -3059,8 +2864,7 @@ check('a snapshot taken apart and joined again is the same JSON, key for key', (
 });
 
 const LONG_IDB = new FakeIndexedDB();
-const LONG_STORE = await openStore({indexedDB: LONG_IDB, localStorage: spyStorage(),
-                                    settings: spySettings()});
+const LONG_STORE = await openStore({indexedDB: LONG_IDB});
 const LONG = recordWithSnapshots(LONG_STORE, {...LONG_FEED, sizeGuard: false,
                                               sizeBudgetBytes: LONG_STORE.perRaceBudget});
 const LONG_SAVES = await Promise.all(LONG.saves);
@@ -3092,24 +2896,24 @@ await checkAsync('with IndexedDB a three hour race keeps every second of the rid
     assertEq(leftovers.length, 0, `the snapshot was left behind: ${leftovers.length} keys`);
 });
 
-await checkAsync('while a long race records with IndexedDB, nothing at all is written to localStorage', async () => {
-    const storage = spyStorage();
-    const settings = spySettings();
-    const store = await openStore({indexedDB: new FakeIndexedDB(), localStorage: storage, settings});
+await checkAsync('a long race, its snapshots and the settings all go to IndexedDB and nowhere else', async () => {
+    const idb = new FakeIndexedDB();
+    const store = await openStore({indexedDB: idb});
     const {rec, saves} = recordWithSnapshots(store, {seconds: 3600, endDistance: 200000, sizeGuard: false});
     assert((await Promise.all(saves)).every(Boolean));
+    store.setSetting('afterLineSeconds', 300);
     await store.save(rec);
     await store.clearLive(rec.id);
-    assertEq(storage.writes.length, 0, `localStorage was written: ${storage.writes.slice(0, 3)}`);
-    assertEq(settings.writes.length, 0, `the settings were written: ${settings.writes.slice(0, 3)}`);
+    const keys = [...idb.dump(DB_NAME).keys()];
+    assert(keys.some(k => k.startsWith('race/')) && keys.includes('settings'), keys.slice(0, 5).join(', '));
+    assertEq((await openStore({indexedDB: idb})).settings().afterLineSeconds, 300);
 });
 
-await checkAsync('with the localStorage fallback no write while recording is over a few kB, and none is under "/"', async () => {
+await checkAsync('with the races in memory no single write while recording is over a few kB', async () => {
+    // The same in-memory store openStore falls back to, over a storage that notes every write.
     const storage = spyStorage();
-    const settings = spySettings();
-    const store = await openStore({indexedDB: new FakeIndexedDB({throwOnOpen: true}),
-                                   localStorage: storage, settings});
-    assertEq(store.kind, 'localstorage');
+    const store = await new Store(new ChunkedKV(storage), LOCAL_BUDGETS).init();
+    assertEq(store.kind, 'memory');
     // As ui.mjs runs it there: the size ladder on, and the snapshot every minute.
     const {rec, saves} = recordWithSnapshots(store, {...LONG_FEED, every: 60,
                                                      sizeBudgetBytes: store.perRaceBudget});
@@ -3118,10 +2922,8 @@ await checkAsync('with the localStorage fallback no write while recording is ove
     const whole = JSON.stringify(rec).length;
     assert(storage.writes.length > 0);
     for (const [k, n] of storage.writes) {
-        assert(!k.startsWith('/'), `wrote ${k} while recording`);
         assert(n <= LOCAL_PIECE_CHARS, `one write while recording was ${n} characters`);
     }
-    assertEq(settings.writes.length, 0);
     // And a snapshot rewrites only a little: on average a save writes a small fraction of what
     // rewriting the whole recording once a minute would.
     const perSave = storage.writes.reduce((n, [, len]) => n + len, 0) / saves.length;
@@ -3228,7 +3030,7 @@ await checkAsync('a race that cannot be saved keeps its crash snapshot, and the 
         const idb = new FakeIndexedDB();
         const storage = new MemoryStorage();
         const store = withIndexedDB ? await openStore({indexedDB: idb}) :
-            new Store(new LocalStorageKV(storage), new MemoryAdapter(), {...LOCAL_BUDGETS, perRace: 1e9});
+            new Store(new ChunkedKV(storage), {...LOCAL_BUDGETS, perRace: 1e9});
         const snap = {...ridden, inProgress: true, snapshotAt: rec.endedAt};
         assert(await store.saveLive(snap), `${what}: the snapshot was not written`);
         const used = withIndexedDB ? [...idb.dump(DB_NAME)].reduce((n, [k, v]) => n + k.length + v.length, 0) :
@@ -3251,7 +3053,7 @@ await checkAsync('a race that cannot be saved keeps its crash snapshot, and the 
         idb.limit = Infinity;
         storage.limit = Infinity;
         const next = withIndexedDB ? await openStore({indexedDB: idb}) :
-            await new Store(new LocalStorageKV(storage), new MemoryAdapter(), LOCAL_BUDGETS).init();
+            await new Store(new ChunkedKV(storage), LOCAL_BUDGETS).init();
         const offered = await next.takePending();
         assert(offered, `${what}: the snapshot of the race that could not be saved is gone`);
         assertEq(offered.id, rec.id);
@@ -3334,7 +3136,7 @@ await checkAsync('an index that does not read back is rebuilt from the races, so
     // Sauce is killed part way through writing the index: a piece written, the count not.
     const count = Number(storage.getItem(`${LOCAL_PREFIX}index`));
     assert(count >= 1);
-    storage.setItem(`${LOCAL_PREFIX}index#0`, storage.getItem(`${LOCAL_PREFIX}index#0`).slice(0, 100));
+    storage.setItem(`${LOCAL_PREFIX}index#0`, 'half a list, not JSON');
     const next = await localStore(storage).init();
     assertEq(next.list().length, 12, 'races dropped out of a list that did not read back');
     assert(next.indexRebuilt);
@@ -3356,7 +3158,7 @@ await checkAsync('the snapshot head stays small in a big field: riders are writt
         const storage = spyStorage();
         const idb = new FakeIndexedDB();
         const store = withIndexedDB ? await openStore({indexedDB: idb}) :
-            await openStore({indexedDB: null, localStorage: storage});
+            await openStore({indexedDB: null});
         const heads = [];
         const chunks = [];
         const write = store.kv.write.bind(store.kv);

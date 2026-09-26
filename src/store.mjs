@@ -4,59 +4,45 @@
  * WHAT THIS FILE DOES: saves, lists, loads and deletes recordings, holds the settings, and holds
  * the in-progress snapshot that survives Sauce restarting. Pure logic over small adapters, so it
  * can be tested with fakes in node. Nothing in here reaches for a browser global: ui.mjs hands in
- * IndexedDB, localStorage and the storage estimate.
+ * IndexedDB and the storage estimate.
  *
- * WHY NOTHING IS WRITTEN UNDER A "/" KEY ANY MORE. Van, 16 Sep 2026, after a 69 minute session
- * with this window minimised: "screen flicker - have to get rid of it - it's distracting - it was
- * the whole screen - not just sauce". Every localStorage write fires a 'storage' event in every
- * other window of the same origin, and every Sauce window listens: for any key starting with "/"
- * it JSON.parses the whole new value and dispatches a 'globalupdate' event
- * (pages/src/common.mjs:66, :69-84), which SettingsStore turns into a remote 'set'
- * (pages/src/common.mjs:988-996). What the overlays do with that is worse than the parsing. The
- * Watching window calls window.location.reload() for any key but /theme, /imperialUnits and
- * themeOverride (pages/src/watching.mjs:1473-1486); the Overview bar stops its renderer and builds
- * its layout again (pages/src/overview.mjs:68-89); a gauge is set up again with its animation off
- * (pages/src/gauge.mjs:385-396). A removal counts too: JSON.parse(null) is null, and the event
- * still fires. This mod used to keep every recording, and a snapshot of the race in progress
- * rewritten whole every 20 seconds, under "/" keys, so every Watching overlay reloaded about
- * three times a minute for as long as a race ran. That is not proven to be the whole-screen
- * flicker, but it is the one thing this mod did to every other window, and it is gone:
+ * WHY NOTHING OF THIS MOD'S GOES IN LOCALSTORAGE. Two reasons, and the second is why there is no
+ * fallback there at all.
  *
- *   IndexedDB   Recordings, their index and the crash snapshot live in an IndexedDB database in
- *               this window's own origin. IndexedDB fires no event in any other window. Sauce's
- *               own pages never use it, so nothing of Sauce's shares it. A mod window is
- *               sandboxed Chromium (src/windows.mjs:1479-1481) on a persistent session partition
- *               (src/windows.mjs:457-458), where IndexedDB is normally there and kept on disk,
- *               but that has not been checked inside Sauce, so it is feature detected, opened
- *               (and opened once more if the first try fails), and proven with a write and a
- *               read before anything relies on it.
- *   fallback    If it is missing or fails, the same data goes to localStorage under keys that do
- *               NOT start with "/". Sauce's handler only parses keys that start with "/" or with
- *               the listening window's own id prefix (pages/src/common.mjs:75-81), so those it
- *               ignores. They are written with localStorage directly, not through Common.storage,
- *               which would put this window's id in front of them (pages/src/common.mjs:103) and
- *               lose them when the window is removed and added again (src/windows.mjs:986). Every
- *               value is written in pieces of at most LOCAL_PIECE_CHARS, so no single write is
- *               more than a few kB, and ui.mjs writes the crash snapshot less often.
- *   settings    The handful of settings are in localStorage under KEY_SETTINGS, also with no
- *               leading "/", written directly (LocalSettings) so they survive the window being
- *               re-added and a reinstall from the mod store, which replaces the mod's own id
- *               (src/mods.mjs:315-318). They used to be under "/sauce-race-report/settings", and
- *               every change reloaded the overlays the same way. That old key is read once as the
- *               starting values and never written or removed, because removing it would fire the
- *               event one last time.
+ * The first, Van, 16 Sep 2026, after a 69 minute session with this window minimised: "screen
+ * flicker - have to get rid of it". Every localStorage write fires a 'storage' event in every other
+ * window of the same origin, and every Sauce window listens: for any key starting with "/" it
+ * JSON.parses the whole new value and dispatches a 'globalupdate' event (pages/src/common.mjs:66,
+ * :69-84), and the Watching window then calls window.location.reload()
+ * (pages/src/watching.mjs:1473-1486), the Overview bar builds its layout again
+ * (pages/src/overview.mjs:68-89) and a gauge is set up again (pages/src/gauge.mjs:385-396). This mod
+ * used to keep every recording, and a snapshot rewritten every 20 seconds, under such keys.
  *
- * Moving races an earlier version saved under "/" keys (see MOVING OLD RACES IN) removes those
- * keys once, in one go, at a moment no race is recording. The overlays reload that once.
+ * The second, from Sauce's mod store review, 25 Sep 2026: "LocalStorage quota is typically ~5MB...
+ * Once LocalStorage is filled up it's going to brick any config updates for normal Sauce windows and
+ * then people will call me." That pool is shared with Sauce's own settings and Sauce handles a full
+ * pool nowhere, so a mod that keeps races there can stop Sauce saving its own settings. This mod
+ * kept races there only when IndexedDB would not open, capped at 400 kB a race and 1 MB in total,
+ * which was still up to a fifth of the pool. That path is gone.
  *
- * Common.storage schedules a flushSessionStorage RPC 500 ms after every write
- * (pages/src/common.mjs:224-228, src/windows.mjs:886-889) so an ordinary quit does not lose it.
- * The localStorage writes here ask for the same through onWrite. IndexedDB needs no flush: a
- * readwrite transaction is on disk when it completes.
+ * So:
+ *
+ *   IndexedDB   Recordings, their index, the crash snapshot and the settings live in an IndexedDB
+ *               database in this window's own origin. IndexedDB fires no event in any other window,
+ *               Sauce's own pages never use it, and its quota is not the localStorage pool. A mod
+ *               window is sandboxed Chromium (src/windows.mjs:1479-1481) on a persistent session
+ *               partition (src/windows.mjs:457-458), so it is feature detected, opened (and opened
+ *               once more if the first try fails), and proven with a write and a read before
+ *               anything relies on it.
+ *   no database If it is missing or fails, everything is kept in this window's memory for as long
+ *               as the window is open, in the same chunked form (ChunkedKV over MemoryStorage), the
+ *               window says so, and a race can still be saved to a file. Nothing is written
+ *               anywhere else. Sauce's own review calls that path "probably a dead code path
+ *               because IDB should always be available in this context".
  *
  * Races kept in IndexedDB stay with the Sauce profile they were recorded in. Sauce's Clone and
  * Export profile copy localStorage only (src/windows.mjs:1148-1190, src/preload/storage-proxy.js),
- * so they do not carry the races; "Save every race to one file" does.
+ * so they do not carry the races or the settings; "Save every race to one file" does.
  *
  * THE CRASH SNAPSHOT is written in pieces rather than whole. A three hour race is megabytes, and
  * rewriting all of it every 20 seconds would be the same mistake again in another place. Each save
@@ -75,36 +61,25 @@
  *
  * THE SIZE RULE. With IndexedDB the budgets come from navigator.storage.estimate() when Chromium
  * gives one (see indexedDBBudgets), and the recorder keeps the rider's own numbers every second and
- * the pack every two seconds for as long as the race runs. Only the localStorage fallback keeps the
- * old rule: that pool is shared by every Sauce window and every other enabled mod in this Sauce
- * profile (src/windows.mjs:452-466, :1468), Sauce's own window settings live in it
- * (pages/src/common.mjs:1072), Sauce handles QuotaExceededError nowhere, and Chromium's
- * per-origin localStorage limit is commonly around 5 MB. There one recording is capped at 400 kB,
- * the total at 1 MB, the warning comes at 700 kB, and the recorder's size ladder thins long races.
- * A race that will not fit either way is still handed back as a file download rather than lost,
- * and its crash snapshot is kept, to be offered again on the next start.
+ * the pack every two seconds for as long as the race runs. With no database, where everything is in
+ * this window's memory, the old smaller rule applies (LOCAL_BUDGETS): one recording up to 400 kB,
+ * 1 MB in total, a warning at 700 kB, and the recorder's size ladder thins long races. A race that
+ * will not fit either way is still handed back as a file download rather than lost, and its crash
+ * snapshot is kept, to be offered again on the next start.
  */
 
-// The keys this mod used in Common.storage before IndexedDB. They are only read, to move what is
-// in them (see MOVING OLD RACES IN), and removed once the move has been confirmed.
-export const KEY_PREFIX = '/sauce-race-report';
-export const KEY_INDEX = `${KEY_PREFIX}/index`;
-export const KEY_LIVE = `${KEY_PREFIX}/live`;
-export const KEY_PENDING = `${KEY_PREFIX}/pending`;
-export const LEGACY_KEY_SETTINGS = `${KEY_PREFIX}/settings`;
-export const keyForRecording = id => `${KEY_PREFIX}/rec/${id}`;
-
-// No leading "/", so Sauce's storage handler never parses these (pages/src/common.mjs:75-81).
+// The prefix each value is kept under. Nothing starts with "/", which is what Sauce's own windows
+// parse (pages/src/common.mjs:75-81), and nothing goes to localStorage at all: see the top.
 export const LOCAL_PREFIX = 'sauce-race-report:';
 export const LOCAL_PIECE_CHARS = 4000;
-export const KEY_SETTINGS = `${LOCAL_PREFIX}settings`;
+// The settings live in the store itself, beside the races.
+const K_SETTINGS = 'settings';
 
-// The keys inside the new store, the same for IndexedDB and for the localStorage fallback.
+// The keys inside the store, the same for IndexedDB and for the in-memory store.
 const K_INDEX = 'index';
 const K_LIVE = 'live';          // {id} of the snapshot of the recording running now
 const K_PENDING = 'pending';    // {id} of the snapshot last session left behind
 const K_UNSAVED = 'unsaved';    // [id, ...] of snapshots still to be offered: a save that failed
-const K_MOVED = 'moved';        // what was copied in from an older place, see MOVING OLD RACES IN
 const K_PROBE = 'probe';
 const RACE_PREFIX = 'race/';
 const SNAP_PREFIX = 'snap/';
@@ -644,7 +619,8 @@ export class IndexedDBKV {
 
 
 /*
- * localStorage, or anything with getItem, setItem, removeItem, key and length. Each value is kept
+ * A key-value store over anything with getItem, setItem, removeItem, key and length: in this mod
+ * always MemoryStorage, for when IndexedDB will not open. Each value is kept
  * as a count under its own key and the text in pieces of at most LOCAL_PIECE_CHARS under "key#0",
  * "key#1" and so on, so no one write, and no one 'storage' event, is bigger than that. A write that
  * fails part way is put back as it was, so a failed save cannot leave half a race behind. A write
@@ -652,8 +628,8 @@ export class IndexedDBKV {
  * is rebuilt from the races when that happens (see _readIndex), and a snapshot is checked whole
  * before it is offered.
  */
-export class LocalStorageKV {
-    constructor(storage, {kind = 'localstorage', onWrite = null} = {}) {
+export class ChunkedKV {
+    constructor(storage, {kind = 'memory', onWrite = null} = {}) {
         this.storage = storage;
         this.kind = kind;
         this.onWrite = onWrite;
@@ -779,7 +755,7 @@ export class LocalStorageKV {
 }
 
 
-/* A Storage in memory, for the tests and as a last resort when localStorage throws. */
+/* A Storage in memory: where everything goes when IndexedDB will not open, and for the tests. */
 export class MemoryStorage {
     constructor() {
         this.map = new Map();
@@ -827,78 +803,17 @@ export class MemoryStorage {
 }
 
 
-/*
- * The settings, in localStorage under KEY_SETTINGS, written directly so no window id goes in front
- * of the key. Until the rider first changes one, the settings an earlier version kept under
- * LEGACY_KEY_SETTINGS are read as they are; that key is never written or removed (see the top).
- */
-export class LocalSettings {
-    constructor(storage, {onWrite = null} = {}) {
-        this.storage = storage;
-        this.onWrite = onWrite;
-    }
-
-    get(key, def) {
-        let raw = this.storage.getItem(key);
-        if (raw == null && key === KEY_SETTINGS) {
-            raw = this.storage.getItem(LEGACY_KEY_SETTINGS);
-        }
-        return raw == null ? def : JSON.parse(raw);
-    }
-
-    set(key, value) {
-        this.storage.setItem(key, JSON.stringify(value));
-        if (this.onWrite) {
-            this.onWrite();
-        }
-    }
-}
-
-
-/*
- * The keys this mod wrote before, read as the exact text that was stored. `storage` is
- * localStorage itself: those keys start with "/", which Common.storage stores as they are
- * (pages/src/common.mjs:103, :122), so reading them directly reads the same thing.
- */
-export class LegacyStorage {
-    constructor(storage, {onWrite = null} = {}) {
-        this.storage = storage;
-        this.onWrite = onWrite;
-    }
-
-    getRaw(key) {
-        return this.storage.getItem(key);
-    }
-
-    /* Removes every key given, back to back, and asks for one flush. */
-    deleteAll(keys) {
-        let n = 0;
-        for (const key of keys) {
-            if (this.storage.getItem(key) != null) {
-                this.storage.removeItem(key);
-                n++;
-            }
-        }
-        if (n && this.onWrite) {
-            this.onWrite();
-        }
-        return n;
-    }
-}
-
-
 /* ------------------------------------------------------------------ the store */
 
 export class Store {
     /*
-     * kv          where recordings and the crash snapshot live: an IndexedDBKV, or a
-     *             LocalStorageKV when IndexedDB is not usable (see openStore)
-     * settings    {get(key), set(key, value)} for the small settings: a LocalSettings in Sauce
+     * kv          where recordings, the crash snapshot and the settings live: an IndexedDBKV, or
+     *             a ChunkedKV over memory when IndexedDB is not usable (see openStore)
      * budgets     {perRace, total, warnAt} in bytes of JSON
      */
-    constructor(kv, settings, budgets = LOCAL_BUDGETS, {now = () => Date.now()} = {}) {
+    constructor(kv, budgets = LOCAL_BUDGETS, {now = () => Date.now()} = {}) {
         this.kv = kv;
-        this.settingsAdapter = settings;
+        this._settings = null;
         this.perRaceBudget = budgets.perRace ?? LOCAL_BUDGETS.perRace;
         this.totalBudget = budgets.total ?? DEFAULT_TOTAL_BUDGET;
         this.warnAt = budgets.warnAt ?? DEFAULT_WARN_AT;
@@ -917,7 +832,6 @@ export class Store {
         this._live = null;
         this._liveGen = 0;
         this._removed = new Set();
-        this._drops = [];
     }
 
     /* 'indexeddb', 'localstorage' or 'memory'. Written into every race saved as storedIn. */
@@ -942,7 +856,10 @@ export class Store {
 
     async init() {
         try {
-            await this._serial(() => this._readIndex());
+            await this._serial(async () => {
+                await this._readSettings();
+                return this._readIndex();
+            });
         } catch(e) {
             // Nothing can be listed, but nothing is overwritten either: every change reads the
             // index again first and fails if it still cannot.
@@ -991,24 +908,28 @@ export class Store {
         return idx;
     }
 
-    settings() {
-        let s;
+    async _readSettings() {
         try {
-            s = this.settingsAdapter.get(KEY_SETTINGS);
+            const raw = await this.kv.get(K_SETTINGS);
+            this._settings = raw != null ? JSON.parse(raw) : {};
         } catch(e) {
-            s = null;
+            this._settings = {};
         }
-        return {...DEFAULT_SETTINGS, ...(s || {})};
+        return this._settings;
+    }
+
+    /* Synchronous, so a checkbox can draw at once: the values were read at startup. */
+    settings() {
+        return {...DEFAULT_SETTINGS, ...(this._settings || {})};
     }
 
     setSetting(key, value) {
         const s = this.settings();
         s[key] = value;
-        try {
-            this.settingsAdapter.set(KEY_SETTINGS, s);
-        } catch(e) {
-            // A full pool must not stop a checkbox working for the rest of the session.
-        }
+        this._settings = s;
+        // Written where the races are. A write that fails must not stop the setting working for
+        // the rest of the session.
+        this._serial(() => this.kv.write([[K_SETTINGS, JSON.stringify(s)]])).catch(e => this._noteWriteError(e));
         return s;
     }
 
@@ -1532,169 +1453,6 @@ export class Store {
         });
     }
 
-    // ------------------------------------------------------------------ moving old races in
-
-    /*
-     * MOVING OLD RACES IN. At startup, races and crash snapshots kept anywhere this mod kept them
-     * before are copied into this store: from the "/" keys an earlier version used (LegacySource),
-     * and, when this store is IndexedDB, from the localStorage fallback a start that could not open
-     * IndexedDB used (LocalSource). Otherwise a race saved while the fallback was in use would drop
-     * out of the list the next time IndexedDB opened.
-     *
-     * Nothing is lost on the way. Each race is written here and read back, and counts as copied
-     * only when what came back is character for character the old text plus the storedIn field.
-     * A copy that does not read back is removed again, and the old one tried on the next start. A
-     * race already here is never overwritten: it may be newer (official results fetched).
-     *
-     * The old copy is NOT removed in the same start. Each copy is recorded under K_MOVED with this
-     * start's session, and the old copy is removed only by a later start that still finds that
-     * record, which is the proof the copy survived Sauce closing (a write and a read in the same
-     * session cannot tell a store kept on disk from one that is not). A race the rider deleted in
-     * between is then not brought back either. The removals themselves wait for dropMovedCopies,
-     * which ui.mjs calls when no race is recording, because removing a "/" key reloads Sauce's
-     * overlays once.
-     */
-    async migrateFrom(source, report = {moved: 0, kept: 0, snapshots: 0, waiting: 0}) {
-        if (!source) {
-            return report;
-        }
-        const moved = await this._movedEntries();
-        const find = (kind, id) => moved.find(x =>
-            x.from === source.name && x.kind === kind && x.id === id);
-        const drops = {races: [], snapshots: []};
-        const added = [];
-        for (const {id, raw} of await source.races()) {
-            if (raw == null) {
-                continue;
-            }
-            const earlier = find('race', id);
-            if (earlier) {
-                if (earlier.session !== this.session) {
-                    drops.races.push(id);
-                }
-                continue;
-            }
-            let copied = false;
-            try {
-                const old = JSON.parse(raw);
-                const canonical = JSON.stringify(old);
-                if ((await this.loadRaw(id)) != null) {
-                    // Already here, from an earlier copy or saved here since: never overwritten.
-                    copied = true;
-                } else {
-                    const res = await this.save(old);
-                    copied = res.ok && sameRecording(await this.loadRaw(id), canonical);
-                    if (res.ok && !copied) {
-                        await this._forget(id);
-                    }
-                }
-            } catch(e) {
-                copied = false;
-            }
-            if (copied) {
-                added.push({from: source.name, kind: 'race', id, session: this.session});
-                report.moved++;
-            } else {
-                report.kept++;
-            }
-        }
-        for (const {slot, id, snap, key} of await source.snapshots()) {
-            const earlier = find('snapshot', id);
-            if (earlier) {
-                if (earlier.session !== this.session) {
-                    drops.snapshots.push({id, key});
-                }
-                continue;
-            }
-            let copied = false;
-            try {
-                const canonical = JSON.stringify(snap);
-                if ((await this._serial(() => this._snapshotRefs())).has(id) &&
-                    await this._serial(() => this._readSnapshot(id))) {
-                    copied = true;
-                } else {
-                    await this._serial(() => this._putSnapshot(slot, snap));
-                    const back = await this._serial(() => this._readSnapshot(id));
-                    copied = !!back && JSON.stringify(back) === canonical;
-                }
-            } catch(e) {
-                copied = false;
-            }
-            if (copied) {
-                added.push({from: source.name, kind: 'snapshot', id, session: this.session});
-                report.snapshots++;
-            }
-        }
-        if (added.length) {
-            try {
-                await this._serial(() => this.kv.update(K_MOVED, raw => ({
-                    value: JSON.stringify([...readMoved(raw), ...added]),
-                })));
-            } catch(e) {
-                // Without the record the old copies simply stay, and the next start records them.
-                this._noteWriteError(e);
-            }
-        }
-        if (drops.races.length || drops.snapshots.length) {
-            this._drops.push({source, drops});
-            report.waiting += drops.races.length + drops.snapshots.length;
-        }
-        return report;
-    }
-
-    /* A race's copy that did not read back, taken out again without marking it deleted. */
-    _forget(id) {
-        return this._serial(async () => {
-            await this.kv.update(K_INDEX, raw => ({
-                value: JSON.stringify(parseList(raw).filter(x => x.id !== id)),
-                deletes: [kRace(id)],
-            }));
-            this._index = this._index.filter(x => x.id !== id);
-        });
-    }
-
-    async _movedEntries() {
-        try {
-            return readMoved(await this._serial(() => this.kv.get(K_MOVED)));
-        } catch(e) {
-            return [];
-        }
-    }
-
-    /*
-     * Removes the old copies a later start has confirmed (see MOVING OLD RACES IN), and their
-     * entries from the record. Returns how many were removed.
-     */
-    async dropMovedCopies() {
-        const drops = this._drops;
-        this._drops = [];
-        const done = [];
-        for (const {source, drops: d} of drops) {
-            try {
-                await source.drop(d);
-                for (const id of d.races) {
-                    done.push([source.name, 'race', id]);
-                }
-                for (const s of d.snapshots) {
-                    done.push([source.name, 'snapshot', s.id]);
-                }
-            } catch(e) {
-                // Left where they are; the next start confirms them again.
-            }
-        }
-        if (done.length) {
-            const gone = new Set(done.map(x => x.join('\n')));
-            try {
-                await this._serial(() => this.kv.update(K_MOVED, raw => ({
-                    value: JSON.stringify(readMoved(raw).filter(x =>
-                        !gone.has([x.from, x.kind, x.id].join('\n')))),
-                })));
-            } catch(e) {
-                this._noteWriteError(e);
-            }
-        }
-        return done.length;
-    }
 }
 
 
@@ -1727,139 +1485,6 @@ function sameRecording(backRaw, canonical) {
 
 
 /*
- * The races and snapshots an earlier version kept whole under "/" keys, through Common.storage.
- * Removing them never rewrites the old index, because every write to a "/" key reloads Sauce's
- * overlays: it goes with the last race it lists.
- */
-export class LegacySource {
-    constructor(legacy) {
-        this.legacy = legacy;
-        this.name = 'legacy';
-    }
-
-    _index() {
-        try {
-            const idx = JSON.parse(this.legacy.getRaw(KEY_INDEX));
-            return Array.isArray(idx) ? idx : [];
-        } catch(e) {
-            return [];
-        }
-    }
-
-    async races() {
-        const out = [];
-        for (const entry of this._index()) {
-            const id = entry && entry.id;
-            if (id != null) {
-                out.push({id, raw: this.legacy.getRaw(keyForRecording(id))});
-            }
-        }
-        return out;
-    }
-
-    async snapshots() {
-        const out = [];
-        // Pending first, then live, in the slots they had.
-        for (const [key, slot] of [[KEY_PENDING, K_PENDING], [KEY_LIVE, K_LIVE]]) {
-            try {
-                const snap = JSON.parse(this.legacy.getRaw(key));
-                if (snap && snap.id != null) {
-                    out.push({slot, id: snap.id, snap, key});
-                }
-            } catch(e) {
-                // Nothing readable there.
-            }
-        }
-        return out;
-    }
-
-    async drop({races, snapshots}) {
-        const keys = [...races.map(keyForRecording), ...snapshots.map(x => x.key)];
-        const going = new Set(keys);
-        if (this._index().every(x => !x || x.id == null || going.has(keyForRecording(x.id)) ||
-                                     this.legacy.getRaw(keyForRecording(x.id)) == null)) {
-            keys.push(KEY_INDEX);
-        }
-        this.legacy.deleteAll(keys);
-    }
-}
-
-
-/* What a start that could not open IndexedDB kept in the localStorage fallback. */
-export class LocalSource {
-    constructor(kv) {
-        this.kv = kv;
-        this.store = new Store(kv, new MemoryAdapter(), LOCAL_BUDGETS);
-        this.name = 'local';
-    }
-
-    async races() {
-        const ids = new Set();
-        try {
-            for (const x of await this.store._readIndex()) {
-                ids.add(x.id);
-            }
-        } catch(e) {
-            // The race keys below still find them.
-        }
-        for (const key of await this.kv.keys(RACE_PREFIX)) {
-            ids.add(key.slice(RACE_PREFIX.length));
-        }
-        const out = [];
-        for (const id of ids) {
-            out.push({id, raw: (await this.kv.get(kRace(id))) ?? null});
-        }
-        return out;
-    }
-
-    async snapshots() {
-        const out = [];
-        const slots = [[K_PENDING, await this.store._pointer(K_PENDING)],
-                       [K_LIVE, await this.store._pointer(K_LIVE)],
-                       ...(await this.store._unsavedIds()).map(id => [K_UNSAVED, id])];
-        for (const [slot, id] of slots) {
-            if (id == null) {
-                continue;
-            }
-            const snap = await this.store._readSnapshot(id);
-            if (snap) {
-                out.push({slot, id, snap, key: null});
-            }
-        }
-        return out;
-    }
-
-    async drop({races, snapshots}) {
-        const raceIds = new Set(races);
-        const snapIds = new Set(snapshots.map(x => x.id));
-        const deletes = races.map(kRace);
-        for (const id of snapIds) {
-            deletes.push(...await this.store._snapshotKeys(id));
-        }
-        const puts = [];
-        const idx = (await this.store._readIndex()).filter(x => !raceIds.has(x.id));
-        const live = await this.store._pointer(K_LIVE);
-        const pending = await this.store._pointer(K_PENDING);
-        const unsaved = (await this.store._unsavedIds()).filter(x => !snapIds.has(x));
-        for (const [slot, id] of [[K_LIVE, live], [K_PENDING, pending]]) {
-            if (id != null && snapIds.has(id)) {
-                deletes.push(slot);
-            }
-        }
-        const left = (await this.kv.keys(RACE_PREFIX)).filter(k => !deletes.includes(k)).length +
-            (await this.kv.keys(SNAP_PREFIX)).filter(k => !deletes.includes(k)).length;
-        if (!idx.length && !left) {
-            // Nothing is left in the fallback, so neither is its list or its own record.
-            deletes.push(K_INDEX, K_UNSAVED, K_MOVED);
-        } else {
-            puts.push([K_INDEX, JSON.stringify(idx)], [K_UNSAVED, JSON.stringify(unsaved)]);
-        }
-        await this.kv.write(puts, deletes);
-    }
-}
-
-
-/*
  * Opens the store the way ui.mjs uses it: IndexedDB when it is there and proves itself with a
  * write, a read and a delete (tried twice), and localStorage under keys Sauce ignores when it is
  * not; then the index is read, anything kept elsewhere before is copied in (MOVING OLD RACES IN),
@@ -1872,8 +1497,7 @@ export class LocalSource {
  *   estimate      what navigator.storage.estimate() returned, or null
  *   onLocalWrite  called after every localStorage write, to schedule Sauce's flush
  */
-export async function openStore({indexedDB = null, localStorage = null, settings = null,
-                                 legacy = null, estimate = null, onLocalWrite = null,
+export async function openStore({indexedDB = null, estimate = null,
                                  openTimeoutMs = DB_OPEN_TIMEOUT_MS,
                                  retryTimeoutMs = DB_OPEN_RETRY_TIMEOUT_MS,
                                  now = () => Date.now()} = {}) {
@@ -1904,29 +1528,16 @@ export async function openStore({indexedDB = null, localStorage = null, settings
         }
     }
     if (!kv) {
-        kv = localStorage ?
-            new LocalStorageKV(localStorage, {onWrite: onLocalWrite}) :
-            new LocalStorageKV(new MemoryStorage(), {kind: 'memory'});
+        // In memory only, and lost when the window closes: nothing of this mod's is ever written
+        // to the localStorage every Sauce window shares (see the top of this file).
+        kv = new ChunkedKV(new MemoryStorage(), {kind: 'memory'});
     }
     const budgets = kv.kind === 'indexeddb' ? indexedDBBudgets(estimate) : LOCAL_BUDGETS;
-    const store = new Store(kv, settings || new MemoryAdapter(), budgets, {now});
+    const store = new Store(kv, budgets, {now});
     store.fallbackReason = kv.kind === 'indexeddb' ? null : why;
     // IndexedDB is there but would not open: races kept in it earlier cannot be listed this time.
     store.indexedDBFailed = !!indexedDB && kv.kind !== 'indexeddb';
     await store.init();
-    const report = {moved: 0, kept: 0, snapshots: 0, waiting: 0};
-    try {
-        if (kv.kind === 'indexeddb' && localStorage) {
-            const local = new LocalStorageKV(localStorage, {onWrite: onLocalWrite});
-            await store.migrateFrom(new LocalSource(local), report);
-        }
-        if (legacy) {
-            await store.migrateFrom(new LegacySource(legacy), report);
-        }
-        store.migration = report;
-    } catch(e) {
-        store.migration = {...report, error: String(e && e.message || e)};
-    }
     try {
         await store.collectSnapshots();
     } catch(e) {

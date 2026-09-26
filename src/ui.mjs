@@ -22,12 +22,13 @@
  *  - Logging happens on transitions only. A window that logs in a tight loop is destroyed by
  *    Sauce with a "Terminated misbehaving window" dialog (src/windows.mjs:335-357).
  *
- *  - Recordings and the crash snapshot are kept in IndexedDB, not localStorage, and nothing this
- *    file writes goes under a key starting with "/", the settings included. Every localStorage
- *    write reaches every other Sauce window as a 'storage' event, Sauce's windows parse the whole
- *    value of any key starting with "/" (pages/src/common.mjs:66-84), and the Watching window
- *    reloads itself for it (pages/src/watching.mjs:1473-1486). See src/store.mjs for why, and for
- *    the fallback when IndexedDB is not there.
+ *  - Nothing this file writes goes to localStorage at all: recordings, the crash snapshot and the
+ *    settings are all in IndexedDB. Every localStorage write reaches every other Sauce window as a
+ *    'storage' event, Sauce's windows parse the whole value of any key starting with "/"
+ *    (pages/src/common.mjs:66-84) and the Watching window reloads itself for it
+ *    (pages/src/watching.mjs:1473-1486); and the pool is shared with Sauce's own settings, so
+ *    filling it would stop Sauce saving its own (Sauce's mod store review, 25 Sep 2026). With no
+ *    IndexedDB the races are kept in memory for this window only. See src/store.mjs.
  *
  *  - The self subscription asks for `resources: ['state']` and nothing else. Sauce merges every
  *    listener on one event into a single query and masks the extra resources back out per
@@ -58,15 +59,12 @@
 import * as Common from '/pages/src/common.mjs';
 import {Recorder, isRaceLike, isSelfPayload, eventBlocksRecording, withAfterLine,
         MOD_VERSION, MIN_SAUCE_VERSION} from './recorder.mjs';
-import {openStore, LegacyStorage, LocalSettings, MemoryAdapter} from './store.mjs';
+import {openStore} from './store.mjs';
 import {buildReport, renderReportHTML, fmtDuration, esc, resultsErrorText} from './report.mjs';
 import {buildFactPack, MAX_EARLIER_RACES, isEarlierRace, raceOverviewLines} from './factpack.mjs';
 import {ZEN_DB, segmentPointsFrom, segmentPointsFromZwift} from './zenmaster.mjs';
 
 const AUTOSAVE_SECONDS = 20;
-// With the localStorage fallback every write still reaches every other window as a 'storage'
-// event, so the snapshot is written less often there. See src/store.mjs.
-const LOCAL_AUTOSAVE_SECONDS = 60;
 const NAME_LOOKUP_SECONDS = 20;
 const SILENCE_BEFORE_EXPLAINING = 60;
 const SELF_RESOURCES = ['state'];
@@ -88,37 +86,13 @@ let pollingSelf = false;
 let startedAt = Date.now();
 let explainedSilence = false;
 let reportedWriteErrors = 0;
-let droppedMovedCopies = false;
 let lastSelfInEvent = false;
-
-
-/*
- * The settings, in localStorage under a key with no leading "/" (LocalSettings in store.mjs), not
- * in Common.storage under "/sauce-race-report/settings" as before: every change there reloaded
- * every Watching overlay.
- */
-function settingsAdapter(ls) {
-    if (ls) {
-        return new LocalSettings(ls, {onWrite: scheduleFlush});
-    }
-    // Should not happen inside Sauce, but never lose the window over it.
-    return new MemoryAdapter();
-}
 
 
 /* window.indexedDB, feature detected: where storage is blocked even reading it can throw. */
 function indexedDBFactory() {
     try {
         return typeof indexedDB !== 'undefined' && indexedDB ? indexedDB : null;
-    } catch(e) {
-        return null;
-    }
-}
-
-
-function localStorageOrNull() {
-    try {
-        return typeof localStorage !== 'undefined' && localStorage ? localStorage : null;
     } catch(e) {
         return null;
     }
@@ -155,33 +129,8 @@ async function storageEstimate() {
 }
 
 
-/*
- * The flush Common.storage schedules 500 ms after each of its own writes
- * (pages/src/common.mjs:224-228), for the writes this mod makes to localStorage directly: the
- * settings, the fallback store, and removing the old "/" keys once they have moved.
- */
-let flushTimer = null;
-
-function scheduleFlush() {
-    clearTimeout(flushTimer);
-    flushTimer = setTimeout(flushNow, 500);
-}
-
-
-function flushNow() {
-    try {
-        const p = Common.rpc.flushSessionStorage();
-        if (p && p.catch) {
-            p.catch(() => undefined);
-        }
-    } catch(e) {
-        // nothing to do
-    }
-}
-
-
 function autosaveSeconds() {
-    return store.kind === 'indexeddb' ? AUTOSAVE_SECONDS : LOCAL_AUTOSAVE_SECONDS;
+    return AUTOSAVE_SECONDS;
 }
 
 
@@ -1348,24 +1297,15 @@ async function offerResume() {
 
 
 async function main() {
-    const ls = localStorageOrNull();
     store = await openStore({
         indexedDB: indexedDBFactory(),
-        localStorage: ls,
-        settings: settingsAdapter(ls),
-        legacy: ls ? new LegacyStorage(ls, {onWrite: scheduleFlush}) : null,
         estimate: await storageEstimate(),
-        onLocalWrite: scheduleFlush,
     });
     const persisted = store.kind === 'indexeddb' ? await requestPersistence() : null;
     // Once, at startup, so a rider's report of a problem can say where their races are kept.
     console.info(`Race Report: recordings are kept in ${store.kind}` +
                  `${store.fallbackReason ? ` (${store.fallbackReason})` : ''}` +
                  `${store.kind === 'indexeddb' ? `, kept when the disk runs low: ${persisted}` : ''}.`);
-    const moved = store.migration;
-    if (moved && (moved.moved || moved.kept || moved.snapshots || moved.waiting || moved.error)) {
-        console.info('Race Report: races kept elsewhere before:', moved);
-    }
     if (store.indexedDBFailed) {
         showBanner('#store-problem', null);
     }
@@ -1377,7 +1317,7 @@ async function main() {
     recorder = new Recorder({onLine, onFinalized, autoRecord: store.settings().autoRecord,
                              afterLineSeconds: store.settings().afterLineSeconds,
                              gunClock: true, listeningSince: startedAt,
-                             // The size ladder is for the localStorage fallback only (store.mjs).
+                             // The size ladder only runs when the races are in memory (store.mjs).
                              sizeBudgetBytes: store.perRaceBudget,
                              sizeGuard: store.kind !== 'indexeddb'});
     wire();
@@ -1410,14 +1350,6 @@ async function main() {
         recorder.tick();
         refreshLive();
         reportWriteErrors();
-        if (!droppedMovedCopies && recorder.state !== 'recording' &&
-            (recorder.lastSelfAt ? !lastSelfInEvent :
-                (Date.now() - startedAt) / 1000 > SILENCE_BEFORE_EXPLAINING)) {
-            // Old copies of races that moved, removed only outside an event, because removing an
-            // old "/" key reloads Sauce's overlays once (MOVING OLD RACES IN, store.mjs).
-            droppedMovedCopies = true;
-            store.dropMovedCopies().catch(() => undefined);
-        }
         if (!recorder.lastSelfAt && !pollingSelf &&
             (Date.now() - startedAt) / 1000 > SILENCE_BEFORE_EXPLAINING) {
             explainSilence();
@@ -1429,12 +1361,9 @@ async function main() {
     for (const ev of ['beforeunload', 'pagehide']) {
         addEventListener(ev, () => {
             if (recorder.state === 'recording') {
+                // An IndexedDB write started here may not complete. The autosave every
+                // AUTOSAVE_SECONDS is what actually protects the recording.
                 saveLiveNow();
-                // For the localStorage fallback: the flush is scheduled 500 ms after a write, and
-                // that timer will not run on a closing window (pages/src/common.mjs:224-228), so
-                // ask for it now. An IndexedDB write started here may not complete either. The
-                // autosave is what actually protects the recording.
-                flushNow();
             }
         });
     }
@@ -1491,8 +1420,8 @@ function maybeResolveNames() {
 function saveLiveIfDue(force) {
     /*
      * Called from the data callback as well as from a timer, because Chromium throttles timers in
-     * a hidden window. A crash or a Sauce restart then loses at most AUTOSAVE_SECONDS, or
-     * LOCAL_AUTOSAVE_SECONDS with the localStorage fallback. Each save writes only the rows added
+     * a hidden window. A crash or a Sauce restart then loses at most AUTOSAVE_SECONDS. Each save
+     * writes only the rows added
      * since the last one (THE CRASH SNAPSHOT in store.mjs).
      */
     if (recorder.state !== 'recording') {

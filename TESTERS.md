@@ -1,4 +1,4 @@
-# Race Report 1.0.6: notes for testers
+# Race Report 1.0.7: notes for testers
 
 Thanks for trying this. Race Report is a mod for Sauce for Zwift that records a race while you ride
 it and then writes a report on how the race was raced.
